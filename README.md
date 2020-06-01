@@ -1,8 +1,9 @@
 ### Call of the forge god
 
-A simple and partial one-pass implementation of C-like preprocessor, as a part of [Ornn](https://github.com/fstqwq/Ornn).
+A simple one-pass implementation of C-like preprocessor, as the bonus part of [Ornn](https://github.com/fstqwq/Ornn).
+Designed to be (hopefully) cross platform.
 
-Supported features (of course all TODO now):
+Supported features:
 * define, undef
 * ifdef, else, endif
 * pragma once
@@ -13,5 +14,6 @@ Supported features (of course all TODO now):
 Implementation standard mainly according to [gcc](https://gcc.gnu.org/onlinedocs/cpp/), with following (but not limited to) exceptions:
 * '$' is not supported as a part of identifier
 * digraphs and trigraphs are not supported
+* ...
 
-Generally speaking, those features are relatively rarely used, and not that important.
+Generally speaking, these features are rarely used and not interesting to implement.

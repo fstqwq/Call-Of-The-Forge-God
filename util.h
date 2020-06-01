@@ -90,6 +90,11 @@ namespace forge_god {
         explicit define_symbol_table(string _name) : name(std::move(_name)) {
             add("__DATE__", define_info({}, stringify(get_date())));
             add("__TIME__", define_info({}, stringify(get_time())));
+#ifdef WIN32
+            add("WIN32", define_info({}, {}));
+#else
+            add("__unix__", define_info({}, {}));
+#endif
         }
 
         void add_object(const string &s, const token_sequence& tokenSequence) {
