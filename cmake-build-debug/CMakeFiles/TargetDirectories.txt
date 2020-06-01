@@ -1,0 +1,3 @@
+C:/code/Call Of The Forge God/cmake-build-debug/CMakeFiles/edit_cache.dir
+C:/code/Call Of The Forge God/cmake-build-debug/CMakeFiles/forge.dir
+C:/code/Call Of The Forge God/cmake-build-debug/CMakeFiles/rebuild_cache.dir
