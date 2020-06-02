@@ -1,3 +1,4 @@
+
 //
 // Created by fstqwq on 2020/6/1.
 //
@@ -16,7 +17,7 @@
 #endif
 namespace forge_god {
 
-    string get_current_time() {
+    const string& get_current_time() {
         static auto current_time = time(nullptr);
         static auto current_time_struct = localtime(&current_time);
         static auto ret_val = (string) asctime(current_time_struct);
@@ -25,11 +26,11 @@ namespace forge_god {
     }
 
     string get_date() {
-        return get_current_time().substr(0, 10);
+        return get_current_time().substr(4, 7) + get_current_time().substr(20, 4);
     }
 
     string get_time() {
-        return get_current_time().substr(11, 114514);
+        return get_current_time().substr(11, 8);
     }
 
     string get_file_modified_time(const string& s) {
@@ -37,7 +38,8 @@ namespace forge_god {
         if (stat(s.c_str(), &attr) == 0) {
             return (string) asctime(localtime(&attr.st_mtime));
         }
-        throw std::runtime_error(s + ": No such file or directory");
+        error(s + ": No such file or directory");
+        return nullptr;
     }
 
     token_sequence stringify(string s) {
@@ -50,7 +52,7 @@ namespace forge_god {
             switch (i) {
                 case 'A'...'Z':
                 case 'a'...'z':
-                case '_': // case '$': // not supported, since ispunct accept it
+                case '_': case '$':
                     firstLetter = true;
                     break;
                 case '0' ... '9':
@@ -63,6 +65,36 @@ namespace forge_god {
         return true;
     }
 
+    bool is_sign(char c) {
+        switch (c) {
+            case 'A'...'Z':
+            case 'a'...'z':
+            case '0'...'9':
+            case '_': case '$':
+            case ' ': case '\r': case '\n': case '\t':
+                return false;
+        }
+        return true;
+    }
+
+    bool start_with_hash(const token_sequence &line) {
+        return line.size() >= 1 && line[line[0] == SPACE && line.size() >= 2] == HASH;
+    }
+
+    token get_directive(const token_sequence &line) {
+        // should check 'start_with_hash' before call
+        size_t i = 1 + (line[0] == SPACE);
+        if (i < line.size() && line[i] == SPACE) i++;
+        if (i < line.size()) {
+            for (auto &item : directive_list) {
+                if (line[i] == item) {
+                    return item;
+                }
+            }
+        }
+        error("unknown directive");
+        return "";
+    }
 
     string file_info::getline_std_string() {
         string ret;
@@ -96,7 +128,7 @@ namespace forge_god {
                     if (i == 0) break;
                 }
                 if (count & 1) {
-                    s.pop_back();
+                    s.back() = ' ';
                     next_line_expected = true;
                 }
             } else {
@@ -107,7 +139,7 @@ namespace forge_god {
         return ret;
     }
 
-    file_line file_info::get_next_line() {
+    token_sequence file_info::get_next_line() {
         token_sequence_builder ret;
         string s = get_semantic_line();
         for (size_t i = 0; i < s.size(); ) {
@@ -160,33 +192,68 @@ namespace forge_god {
                 }
             }
         }
-        return {lines.size(), ret.get_token_sequence()};
+        return ret.get_token_sequence();
     }
 
-#ifdef WIN32
-#include <windows.h>
-#include <stdarg.h>
-void outputColoredWarning() {
+    void token_sequence_builder::add(const token& s) {
+        // "...", '...'
+        if (!current_token.empty()) {
+            tokens.push_back(current_token);
+        }
+        tokens.push_back(s);
+    }
+
+    void token_sequence_builder::add(char c)  {
+        if (std::isspace(c)) {
+            if (current_token != EMPTY) {
+                if (current_token == SPACE) return;
+                tokens.push_back(current_token);
+            }
+            current_token = SPACE;
+        } else if (is_sign(c)) {
+            if (current_token != EMPTY) {
+                tokens.push_back(current_token);
+            }
+            tokens.push_back({c});
+            current_token = EMPTY;
+        } else {
+            if (current_token == SPACE) {
+                tokens.push_back(current_token);
+                current_token = EMPTY;
+            }
+            current_token += c;
+        }
+    }
+
+    token_sequence token_sequence_builder::get_token_sequence() {
+        if (!current_token.empty()) {
+            tokens.push_back(current_token);
+        }
+        return tokens;
+    }
+
+
+#ifdef WINDOWS
+
+void cprintf(FILE* stream, unsigned short color, char *s) {
     WORD colorOld;
     HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
     CONSOLE_SCREEN_BUFFER_INFO csbi;
     GetConsoleScreenBufferInfo(handle, &csbi);
     colorOld = csbi.wAttributes;
-    SetConsoleTextAttribute(handle, 13);
-    fprintf(stderr, "warning: ");
+    SetConsoleTextAttribute(handle, color);
+    fprintf(stream, "%s", s);
     SetConsoleTextAttribute(handle, colorOld);
+}
+
+void outputColoredWarning() {
+    cprintf(stderr, 13, (char *) "warning: ");
 }
 
 void outputColoredError() {
-    WORD colorOld;
-    HANDLE handle = GetStdHandle(STD_ERROR_HANDLE);
-    CONSOLE_SCREEN_BUFFER_INFO csbi;
-    GetConsoleScreenBufferInfo(handle, &csbi);
-    colorOld = csbi.wAttributes;
-    SetConsoleTextAttribute(handle, 12);
-    fprintf(stderr, "error: ");
-    SetConsoleTextAttribute(handle, colorOld);
+    cprintf(stderr, 12, (char *) "error: ");
 }
+
 #else
 void outputColoredWarning() {
     fprintf(stderr, "\033[0;31merror:\033[0m ");
@@ -195,4 +262,8 @@ void outputColoredError() {
     fprintf(stderr, "\033[0;35mwarning:\033[0m ");
 }
 #endif
+    const char help_msg[] = "Call of the forge god : A simple C-like preprocessor.\nUsage : forge input_file [-o output_file]";
+    void show_help_msg() {
+        fputs(help_msg, stderr);
+    }
 } //FORGE_GOD
