@@ -12,18 +12,20 @@ namespace forge_god {
     void warning(const string &msg);
     void error(const string &msg);
 
-    void visit_define(const token_sequence& line);
-    void visit_undef(const token_sequence& line);
-    void visit_include(const token_sequence& line);
-    void visit_error(const token_sequence& line);
-    void visit_warning(const token_sequence& line);
-    void visit_ifdef(const token_sequence& line);
-    void visit_ifndef(const token_sequence& line);
-    void visit_else(const token_sequence& line);
-    void visit_endif(const token_sequence& line);
-    void visit_pragma(const token_sequence& line);
-    void visit_line(const token_sequence& line);
-    void visit_normal_line(const token_sequence& line);
+    void visit_define();
+    void visit_undef();
+    void visit_include();
+    void visit_error();
+    void visit_warning();
+    void visit_ifdef();
+    void visit_ifndef();
+    void visit_else();
+    void visit_endif();
+    void visit_pragma();
+    void visit_line();
+    void visit_statements();
+
+    void replace_current_line();
 } //FORGE_GOD
 
 #endif //FORGE_FORGE_H

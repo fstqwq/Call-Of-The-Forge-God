@@ -6,7 +6,7 @@
 #include "util.h"
 
 int main(int argc, char **argv) {
-    string input_file_name = "";
+    vector<string> input_file_names;
     string output_file_name = "";
     {
         bool read_output = false;
@@ -26,22 +26,20 @@ int main(int argc, char **argv) {
                     }
                     read_output = false;
                 } else {
-                    if (input_file_name.empty()) {
-                        input_file_name = arg;
-                    } else {
-                        forge_god::error("multiple input file");
-                    }
+                    input_file_names.push_back(arg);
                 }
             }
         }
     }
-    if (input_file_name.empty() && output_file_name.empty()) {
+    if (input_file_names.empty() && output_file_name.empty()) {
         forge_god::show_help_msg();
         return 0;
     }
-    if (input_file_name.empty()) {
+    if (input_file_names.empty()) {
         forge_god::error("no input file");
     }
-    forge_god::run(input_file_name);
+    for (const auto & file : input_file_names) {
+        forge_god::run(file);
+    }
     forge_god::output(output_file_name);
 }

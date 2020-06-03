@@ -1,4 +1,4 @@
-# ![](https://www.mobafire.com/images/ability/ornn-call-of-the-forge-god.png) Call of the forge god
+### ![](https://www.mobafire.com/images/ability/ornn-call-of-the-forge-god.png) Call of the forge god
 
 A simple one-pass implementation of C-like preprocessor, as the bonus part of [Ornn](https://github.com/fstqwq/Ornn).
 Designed to be (hopefully) cross platform.

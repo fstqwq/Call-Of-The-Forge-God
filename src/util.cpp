@@ -64,8 +64,26 @@ namespace forge_god {
         }
         return true;
     }
+    bool is_string(const token& s) {
+        return s.size() > 1 && s.front() == '"' && s.back() == '"';
+    }
 
-    bool is_sign(char c) {
+    int parse_number(const token &s) {
+        if (!s.size()) error("not a number");
+        int ret = 0;
+        for (size_t j = 0; j < s.size(); j++) {
+            switch (s[j]) {
+                case '0'...'9':
+                    ret = ret * 10 + s[j] - '0';
+                    break;
+                default:
+                    error("not a number");
+            }
+        }
+        return ret;
+    }
+
+    bool is_sep(char c) {
         switch (c) {
             case 'A'...'Z':
             case 'a'...'z':
@@ -92,8 +110,22 @@ namespace forge_god {
                 }
             }
         }
-        error("unknown directive");
-        return "";
+        return EMPTY;
+    }
+
+    token get_string(const token_sequence &line) {
+        size_t i = 0, n = line.size();
+        token ret = "\"";
+        if (i < n && line[i] == SPACE) i++;
+        if (n > 0 && line[n - 1] == SPACE) n--;
+        for ( ; i < n; i++) {
+            for (const auto &j : line[i]) {
+                if (j == '"') ret += "\\\"";
+                else if (j == '\\') ret += "\\\\";
+                else ret += j;
+            }
+        }
+        return ret;
     }
 
     string file_info::getline_std_string() {
@@ -120,17 +152,8 @@ namespace forge_god {
         do {
             string s = getline_std_string();
             if (!s.empty() && s.back() == '\\') {
-                // count the trailing \, if odd, then consider it '\\\n'
-                int count = 0;
-                for (size_t i = s.size() - 1; ; i--) {
-                    if (s[i] == '\\') count++;
-                    else break;
-                    if (i == 0) break;
-                }
-                if (count & 1) {
-                    s.back() = ' ';
-                    next_line_expected = true;
-                }
+                s.back() = ' ';
+                next_line_expected = true;
             } else {
                 next_line_expected = false;
             }
@@ -167,7 +190,7 @@ namespace forge_god {
             } else if (i + 1 < s.size() && s[i] == '/' && s[i + 1] == '/') {
                 ret.add(' ');
                 break; // bye ~
-            } else if (s[i] == '"' || s[i] == '\''){
+            } else if (s[i] == '"' || s[i] == '\'') {
                 size_t j = i + 1;
                 bool found = false;
                 while (j < s.size()) {
@@ -187,19 +210,23 @@ namespace forge_god {
                         between += s[k];
                     }
                     ret.add(between);
+                    i = j + 1;
                 } else {
                     error((string)"missing terminate " + s[i]);
                 }
+            } else {
+                ret.add(s[i++]);
             }
         }
         return ret.get_token_sequence();
     }
 
     void token_sequence_builder::add(const token& s) {
-        // "...", '...'
         if (!current_token.empty()) {
             tokens.push_back(current_token);
+            current_token = EMPTY;
         }
+        if (!tokens.empty() && tokens.back() == SPACE && s == SPACE) return;
         tokens.push_back(s);
     }
 
@@ -210,7 +237,7 @@ namespace forge_god {
                 tokens.push_back(current_token);
             }
             current_token = SPACE;
-        } else if (is_sign(c)) {
+        } else if (is_sep(c)) {
             if (current_token != EMPTY) {
                 tokens.push_back(current_token);
             }
@@ -225,12 +252,38 @@ namespace forge_god {
         }
     }
 
+    void token_sequence_builder::add_all(const token_sequence& tokenSequence) {
+        for (const auto& i : tokenSequence) {
+            add(i);
+        }
+    }
+
+    void token_sequence_builder::concatenate(const token_sequence& tokenSequence) {
+        // must use as second mode
+        if (!tokenSequence.size()) return;
+        while (!tokens.empty() && tokens.back() == SPACE) tokens.pop_back();
+        if (tokens.empty()) {
+            for (auto &i : tokenSequence) {
+                add(i);
+            }
+        } else if(is_sep(tokens.back().back()) || is_sep(tokenSequence.front().front())) {
+            error("pasting \"" + tokens.back() + "\" and \"" + tokenSequence.front() + "\" does not give a valid preprocessing token");
+        } else {
+            tokens.back() += tokenSequence.front();
+            for (size_t i = 1; i < tokenSequence.size(); i++) {
+                add(tokenSequence[i]);
+            }
+        }
+    }
+
     token_sequence token_sequence_builder::get_token_sequence() {
         if (!current_token.empty()) {
             tokens.push_back(current_token);
         }
         return tokens;
     }
+
+
 
 
 #ifdef WINDOWS
@@ -246,11 +299,11 @@ void cprintf(FILE* stream, unsigned short color, char *s) {
     SetConsoleTextAttribute(handle, colorOld);
 }
 
-void outputColoredWarning() {
+void output_colored_warning() {
     cprintf(stderr, 13, (char *) "warning: ");
 }
 
-void outputColoredError() {
+void output_colored_error() {
     cprintf(stderr, 12, (char *) "error: ");
 }
 

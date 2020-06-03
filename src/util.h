@@ -3,8 +3,6 @@
 //
 #ifndef FORGE_UTIL_H
 #define FORGE_UTIL_H
-#include <fstream>
-#include <cstdio>
 #include "typedefs.h"
 #include "forge.h"
 #if defined(_WIN32) || defined(__CYGWIN__) || defined(__MINGW32__) || defined(WIN32)
@@ -12,7 +10,7 @@
 #include <windows.h>
 #include <stdarg.h>
 #endif
-#define debug(s) fprintf(stderr, "%s", s)
+#define debug(s) fprintf(stderr, "%s\n", s)
 
 namespace forge_god {
 
@@ -32,25 +30,32 @@ namespace forge_god {
     static const token SPACE   = " ";
     static const token EMPTY   = "";
     static const token HASH   = "#";
+    static const token DOUBLE_HASH   = "##";
     static const token LEFT_BRACKET = "(";
     static const token RIGHT_BRACKET = ")";
     static const token COMMA = ",";
 
-    void outputColoredWarning();
+    void output_colored_warning();
 
-    void outputColoredError();
+    void output_colored_error();
 
     string get_file_modified_time(const string& s);
 
     token_sequence stringify(string s);
 
-    bool is_sign(char c);
+    bool is_sep(char c);
 
     bool is_identifier(const token& s);
+
+    bool is_string(const token& s);
+
+    int parse_number(const token& s);
 
     bool start_with_hash(const token_sequence &line);
 
     token get_directive(const token_sequence& line);
+
+    token get_string(const token_sequence& line);
 
     const string& get_current_time();
 
@@ -81,7 +86,9 @@ namespace forge_god {
             }
         }
         bool eof() {
-            return feof(file);
+            bool ret = fgetc(file) == EOF;
+            if (!ret) fseek(file, -1, SEEK_CUR);
+            return ret;
         }
         int line_number() {
             return int(lines.size()) + line_offset;
@@ -102,15 +109,25 @@ namespace forge_god {
         token_sequence_builder() = default;
         void add(const token& s);
         void add(char c);
+        void add_all(const token_sequence& tokenSequence);
+        void concatenate(const token_sequence& tokenSequence);
         token_sequence get_token_sequence();
+        bool empty() {
+            return current_token.empty() && tokens.empty();
+        }
+        void clear() {
+            tokens.clear();
+            current_token.clear();
+        }
     };
 
     struct define_info {
+        bool is_object_like;
         token_sequence params;
         token_sequence content;
         define_info () = default;
-        define_info (token_sequence _params, token_sequence _content)
-        : params(move(_params)), content(move(_content)) {}
+        define_info (bool _is_object_like, token_sequence _params, token_sequence _content)
+        : is_object_like(_is_object_like), params(move(_params)), content(move(_content)) {}
     };
     struct define_symbol_table {
         string name;
@@ -119,26 +136,26 @@ namespace forge_god {
         define_symbol_table() = default;
 
         explicit define_symbol_table(string _name) : name(std::move(_name)) {
-            add("__DATE__", define_info({}, stringify(get_date())));
-            add("__TIME__", define_info({}, stringify(get_time())));
+            add_object("__DATE__", stringify(get_date()));
+            add_object("__TIME__", stringify(get_date()));
 #ifdef WINDOWS
-            add("WIN32", define_info({}, {}));
+            add_object("WIN32", {});
 #else
-            add("__unix__", define_info({}, {}));
+            add_object("__unix__", {});
 #endif
         }
 
         void add_object(const token &s, const token_sequence& tokenSequence) {
-            add(s, define_info({}, tokenSequence));
+            add(s, define_info(true, {}, tokenSequence));
         }
 
         void add_function(const token &s, const token_sequence& params, const token_sequence& content) {
-            add(s, define_info(params, content));
+            add(s, define_info(false, params, content));
         }
 
         void add(const token &s, const define_info &defineInfo) {
             auto iter = table.find(s);
-            if (iter != table.end() && (iter->second.params != defineInfo.params || iter->second.content != defineInfo.content)) {
+            if (iter != table.end() && (iter->second.is_object_like != defineInfo.is_object_like || iter->second.params != defineInfo.params || iter->second.content != defineInfo.content)) {
                 warning("redefining marco " + s + " that is not effectively the same with previous define");
             }
             table.insert(std::make_pair(s, defineInfo));
