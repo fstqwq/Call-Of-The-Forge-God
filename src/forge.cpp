@@ -7,33 +7,63 @@
 
 namespace forge_god {
 
-    vector <file_info*> include_stack;
+    output_buffer output_lines;
+    std::unordered_map<token, token_sequence> predefined_marco({
+       { "__DATE__", stringify(get_date())},
+       { "__TIME__", stringify(get_time())},
+       { "__STDC__", {"1"}},
+       { "__STDC_VERSION__", {"201112L"}},
+       {"__cplusplus", {"201103L"}},
+#ifdef WINDOWS
+       { "WIN32", {}},
+#else
+       { "unix", {}},
+       { "__unix__", {}},
+#endif
+       {"and", {"&&"}},
+       {"and_eq", {"&="}},
+       {"bitand", {"&"}},
+       {"bitor", {"|"}},
+       {"compl", {"~"}},
+       {"not", {"!"}},
+       {"not_eq", {"!="}},
+       {"or", {"||"}},
+       {"or_eq", {"|="}},
+       {"xor", {"^"}},
+       {"xor_eq", {"^="}},
+    });
+
+    vector <file_info*> file_stack;
     vector <vector<pair<token, int>>*> if_stack;
     vector <int> if_false_count;
+    define_symbol_table symbol_table;
+    std::unordered_set <string> pragma_once;
+    std::unordered_set <token> disabled_marco;
+    token_sequence current_line;
+    size_t current_line_counter = 0;
 
     void dump_stack() {
-        if (!include_stack.empty()) {
-            if (include_stack.size() > 1) {
+        if (!file_stack.empty()) {
+            if (file_stack.size() > 1) {
                 bool is_first = true;
-                for (size_t i = include_stack.size() - 2; ; i--) {
+                for (size_t i = file_stack.size() - 2; ; i--) {
                     if (is_first) {
                         fprintf(stderr, "In file included ");
                         is_first = false;
                     } else {
                         fprintf(stderr, "                 ");
                     }
-                    fprintf(stderr, "from %s:%d:\n", include_stack[i]->name.c_str(), include_stack[i]->line_number());
+                    fprintf(stderr, "from %s:%lld:\n", file_stack[i]->name.c_str(), file_stack[i]->get_line_number());
                     if (i == 0) break;
                 }
             }
-            fprintf(stderr, "%s ", (include_stack.back()->name + ":" + std::to_string(include_stack.back()->line_number()) +
-                                   ":").c_str());
+            fprintf(stderr, "%s:%lld: ", file_stack.back()->name.c_str(), file_stack.back()->get_line_number());
         }
     }
 
     void dump_last_line() {
-        if (!include_stack.empty()) {
-            fprintf(stderr, ">\t%s\n", include_stack.back()->lines.back().c_str());
+        if (!file_stack.empty()) {
+            fprintf(stderr, ">\t%s\n", file_stack.back()->lines.back().c_str());
         }
     }
 
@@ -52,13 +82,6 @@ namespace forge_god {
         dump_last_line();
     }
 
-    vector <token_sequence> output_lines;
-    define_symbol_table symbol_table("symbol table");
-    std::unordered_set <string> pragma_once;
-    std::unordered_set <token> disabled_marco;
-    token_sequence current_line;
-    size_t current_line_counter = 0;
-
     void set_file_define(const file_info& file) {
         symbol_table.remove("__FILE__");
         symbol_table.remove("__TIMESTAMP__");
@@ -67,7 +90,7 @@ namespace forge_god {
     }
 
     void enter_file(file_info& file, vector< pair<token, int> >& ifs) {
-        include_stack.push_back(&file);
+        file_stack.push_back(&file);
         if_stack.push_back(&ifs);
         if_false_count.push_back(0);
         set_file_define(file);
@@ -78,25 +101,24 @@ namespace forge_god {
             error("unterminated " + if_stack.back()->back().first);
         }
         if_stack.pop_back();
-        include_stack.pop_back();
+        file_stack.pop_back();
         if_false_count.pop_back();
-        if (!include_stack.empty()) {
-            set_file_define(*include_stack.back());
+        if (!file_stack.empty()) {
+            set_file_define(*file_stack.back());
         }
     }
 
-    token_sequence replace_line(const token_sequence& line) {
+    token_sequence replace_line(const token_sequence& line, bool in_if) {
         token_sequence_builder tokens;
         size_t n = line.size();
         for (size_t i = 0; i < n; i++) {
             const auto & cur = line[i];
             if (is_identifier(cur) && symbol_table.contains(cur) && !disabled_marco.count(cur)) {
+                disabled_marco.insert(cur);
                 const auto & info = symbol_table.get(cur);
                 if (info.is_object_like) {
                     // unconditionally, do replacement
-                    disabled_marco.insert(cur);
-                    tokens.add_all(replace_line(info.content));
-                    disabled_marco.erase(cur);
+                    tokens.add_all(replace_line(info.content, in_if));
                 } else {
                     size_t j = i + 1;
                     if (j < n && line[j] == SPACE) j++;
@@ -107,7 +129,6 @@ namespace forge_god {
                         for ( ; j < n && line[j] != RIGHT_BRACKET; j++) {
                             if (line[j] == COMMA) {
                                 has_comma = true;
-                                current_tokens.add(SPACE);
                                 params.push_back(current_tokens.get_token_sequence());
                                 current_tokens.clear();
                             } else {
@@ -124,12 +145,32 @@ namespace forge_god {
                             if (info.params.size() == 0) {
                                 // happy
                             } else {
-                                params.push_back({EMPTY});
+                                params.push_back({});
                             }
                         } else {
                             auto token_seq = current_tokens.get_token_sequence();
                             if (!token_seq.empty() && token_seq.back() == SPACE) token_seq.pop_back();
                             params.push_back(token_seq);
+                        }
+                        if (info.is_variadic) {
+                            if (params.size() < info.params.size()) {
+                                if (params.size() == info.params.size() - 1
+                                && !(current_tokens.empty() && !has_comma)) { // empty can only accept one arg
+                                    params.push_back({});
+                                } else {
+                                    error("macro \"" + cur + "\" requires " + std::to_string(info.params.size())
+                                          + " arguments, but only " + std::to_string(params.size()) + " given");
+                                }
+                            }
+                            token_sequence_builder va_arg;
+                            va_arg.add_all(params[info.params.size() - 1]);
+                            for (size_t k = info.params.size(); k < params.size(); k++) {
+                                va_arg.add(COMMA);
+                                va_arg.add(SPACE);
+                                va_arg.add_all(params[k]);
+                            }
+                            while (params.size() >= info.params.size()) params.pop_back();
+                            params.push_back(va_arg.get_token_sequence());
                         }
                         if (params.size() != info.params.size()) {
                             error("macro \"" + cur + "\" requires " + std::to_string(info.params.size())
@@ -137,46 +178,84 @@ namespace forge_god {
                         }
                         std::unordered_map <token, token_sequence*> marco_map;
                         for (size_t k = 0; k < params.size(); k++) {
-                            marco_map.insert(make_pair(info.params[k], &params[k]));
+                            marco_map[info.params[k]] = &params[k];
                         }
                         token_sequence_builder next;
                         bool in_hash = false, in_double_hash = false;
-                        disabled_marco.insert(cur);
-                        for (const auto &token : info.content) {
-                            if (token == HASH) {
+                        int in_va_opt = 0;
+                        for (const auto &content : info.content) {
+                            if (content == HASH) {
                                 in_hash = true;
-                            } else if (token == DOUBLE_HASH) {
+                            } else if (content == DOUBLE_HASH) {
                                 in_double_hash = true;
                             } else {
-                                if (is_identifier(token)) {
+                                if (in_va_opt) {
+                                    if (content == LEFT_BRACKET) {
+                                        in_va_opt++;
+                                        continue;
+                                    } else if (content == RIGHT_BRACKET) {
+                                        if (--in_va_opt == 1) {
+                                            in_va_opt = 0;
+                                        }
+                                        continue;
+                                    }
+                                }
+                                if (in_va_opt && params.back().size() == 0) {
+                                    continue;
+                                }
+                                if (is_identifier(content)) {
                                     if (in_hash) {
                                         in_hash = false;
-                                        next.add(get_string(*marco_map.find(token)->second));
+                                        next.add(get_string(*marco_map.find(content)->second));
                                     } else if (in_double_hash) {
                                         in_double_hash = false;
-                                        next.concatenate(replace_line(*marco_map.find(token)->second));
+                                        next.concatenate(replace_line(*marco_map.find(content)->second, in_if));
                                     } else {
                                         assert(!in_hash && !in_double_hash);
-                                        if (marco_map.count(token)) {
-                                            next.add_all(replace_line(*marco_map.find(token)->second));
+                                        if (marco_map.count(content)) {
+                                            next.add_all(replace_line(*marco_map.find(content)->second, in_if));
+                                        } else if (info.is_variadic && content == "__VA_OPT__") {
+                                            in_va_opt = 1;
                                         } else {
-                                            next.add_all(replace_line({token}));
+                                            next.add_all(replace_line({content}, in_if));
                                         }
                                     }
                                 } else {
                                     assert(!in_hash && !in_double_hash);
-                                    next.add(token);
+                                    next.add(content);
                                 }
                             }
                         }
                         assert(!in_hash && !in_double_hash);
-                        disabled_marco.erase(cur);
                         tokens.add_all(next.get_token_sequence());
                     } else {
                         // not matched
                         tokens.add(cur);
                     }
                 }
+                disabled_marco.erase(cur);
+            } else if (in_if && cur == Defined) {
+                size_t j = i + 1; int ret;
+                if (j < n && line[j] == SPACE) j++;
+                if (j < n && line[j] == LEFT_BRACKET) {
+                    j++;
+                    if (j < n && line[j] == SPACE) j++;
+                    if (j == n || !is_identifier(line[j])) {
+                        error("operator \"defined\" requires an identifier");
+                    }
+                    ret = symbol_table.contains(line[j++]);
+                    if (j < n && line[j] == SPACE) j++;
+                    if (j == n || line[j] != RIGHT_BRACKET) {
+                        error("missing ')' after \"defined\"");
+                    }
+                } else {
+                    if (!is_identifier(line[j])) {
+                        error("operator \"defined\" requires an identifier");
+                    }
+                    ret = symbol_table.contains(line[j]);
+                }
+                i = j;
+                tokens.add(std::to_string(ret));
             } else {
                 tokens.add(cur);
             }
@@ -192,21 +271,16 @@ namespace forge_god {
         return current_line[current_line_counter++];
     }
 
-    const token& get_last() {
-        assert(current_line_counter > 0);
-        return current_line[current_line_counter - 1];
-    }
-
     const token& peek_next() {
         return current_line_counter == current_line.size() ? EMPTY : current_line[current_line_counter];
     }
 
-    void replace_current_line() {
+    void replace_current_line(bool in_if = false) {
         token_sequence tokens;
         while (has_next()) {
             tokens.push_back(get_next());
         }
-        current_line = replace_line(tokens);
+        current_line = replace_line(tokens, in_if);
         current_line_counter = 0;
     }
 
@@ -236,6 +310,21 @@ namespace forge_god {
                     if (last_token != EMPTY && last_token != COMMA) error("macro parameters must be comma-separated");
                     info.params.push_back(cur);
                     last_token = cur;
+                } else if (cur == DOT) {
+                    if (!is_identifier(last_token)) {
+                        info.params.push_back("__VA_ARGS__");
+                    }
+                    info.is_variadic = true;
+                    // next two are dot, or fuck it
+                    if (!(peek_next() == DOT)) error("\".\" may not appear in macro parameter list");
+                    get_next();
+                    if (!(peek_next() == DOT)) error("\".\" may not appear in macro parameter list");
+                    get_next();
+                    while (peek_next() == SPACE) get_next();
+                    if (peek_next() != RIGHT_BRACKET) {
+                        error("missing ')' after variadic macros in macro parameter list");
+                    }
+                    last_token = info.params.back();
                 } else {
                     error("unexpected " + cur);
                 }
@@ -272,7 +361,7 @@ namespace forge_god {
         }
         info.content = content.get_token_sequence();
         symbol_table.add(marco, info);
-        output_lines.push_back({EMPTY});
+        output_lines.push_back({});
     }
 
     void visit_undef() {
@@ -281,7 +370,7 @@ namespace forge_god {
         token marco = get_next();
         if (!is_identifier(marco)) error("macro names must be identifiers");
         symbol_table.remove(marco);
-        output_lines.push_back({EMPTY});
+        output_lines.push_back({});
     }
 
     void visit_include() {
@@ -327,21 +416,22 @@ namespace forge_god {
 
     void visit_error() {
         if (if_false_count.back()) {current_line.clear(); current_line_counter = 0; return;}
-        error(include_stack.back()->lines.back());
+        error(file_stack.back()->lines.back());
         while (has_next()) get_next();
-        output_lines.push_back({EMPTY});
+        output_lines.push_back({});
     }
 
     void visit_warning() {
         if (if_false_count.back()) {current_line.clear(); current_line_counter = 0; return;}
-        warning(include_stack.back()->lines.back());
+        warning(file_stack.back()->lines.back());
         while (has_next()) get_next();
-        output_lines.push_back({EMPTY});
+        output_lines.push_back({});
     }
 
     void visit_ifdef() {
         if (if_false_count.back()) {
-            if_stack.back()->push_back(make_pair("#ifdef (at line " + std::to_string(include_stack.back()->line_number()) + ")", 1));
+            if_stack.back()->push_back(make_pair("#ifdef (at line " + std::to_string(
+                    file_stack.back()->get_line_number()) + ")", 1));
             current_line.clear(); current_line_counter = 0; return;
         }
         if (!has_next()) {
@@ -350,12 +440,16 @@ namespace forge_god {
         if (!is_identifier(peek_next())) {
             error("macro names must be identifiers");
         }
-        if_stack.back()->push_back(make_pair("#ifdef (at line " + std::to_string(include_stack.back()->line_number()) + ")", symbol_table.contains(get_next())));
+
+        int val = symbol_table.contains(get_next());
+        if_stack.back()->push_back(make_pair("#ifdef (at line " + std::to_string(file_stack.back()->get_line_number()) + ")", val));
+        if_false_count.back() += !val;
     }
 
     void visit_ifndef() {
         if (if_false_count.back()) {
-            if_stack.back()->push_back(make_pair("#ifndef (at line " + std::to_string(include_stack.back()->line_number()) + ")", 1));
+            if_stack.back()->push_back(make_pair("#ifndef (at line " + std::to_string(
+                    file_stack.back()->get_line_number()) + ")", 1));
             current_line.clear(); current_line_counter = 0; return;
         }
         if (!has_next()) {
@@ -364,7 +458,20 @@ namespace forge_god {
         if (!is_identifier(peek_next())) {
             error("macro names must be identifiers");
         }
-        if_stack.back()->push_back(make_pair("#ifndef (at line " + std::to_string(include_stack.back()->line_number()) + ")", !symbol_table.contains(get_next())));
+        int val = !symbol_table.contains(get_next());
+        if_stack.back()->push_back(make_pair("#ifndef (at line " + std::to_string(file_stack.back()->get_line_number()) + ")", val));
+        if_false_count.back() += !val;
+    }
+
+    void visit_if() {
+        if (!has_next()) {
+            error("#if with no expression");
+        }
+        replace_current_line(true);
+        int val = expr::eval(current_line);
+        if_stack.back()->push_back(make_pair(file_stack.back()->lines.back(), val));
+        if_false_count.back() += !val;
+        current_line.clear(); current_line_counter = 0;
     }
 
     void visit_else() {
@@ -380,7 +487,7 @@ namespace forge_god {
 
     void visit_endif() {
         if (if_stack.empty()) {
-            error("#endif without if");
+            error("#endif without #if");
         }
         if_false_count.back() -= !(if_stack.back()->back().second & 1);
         if_stack.back()->pop_back();
@@ -390,30 +497,30 @@ namespace forge_god {
         if (if_false_count.back()) { current_line.clear(); current_line_counter = 0; return; }
         if (!has_next()) warning("ignoring pragma");
         else if (get_next() == Once) {
-            pragma_once.insert(include_stack.back()->name);
+            pragma_once.insert(file_stack.back()->name);
         } else {
             warning("ignoring unknown pragma");
             while (has_next()) get_next();
         }
-        output_lines.push_back({EMPTY});
+        output_lines.push_back({});
     }
 
     void visit_line() {
         if (if_false_count.back()) { current_line.clear(); current_line_counter = 0; return; }
         if (!has_next()) error("unexpected end of line after #line");
         replace_current_line();
-        int line_no = parse_number(get_next());
-        include_stack.back()->set_line_number(line_no);
+        int64_t line_no = parse_positive_decimal(get_next());
+        file_stack.back()->set_line_number(line_no);
         if (has_next() && peek_next() == SPACE) get_next();
         if (has_next()) {
             token name = get_next();
             if (!is_string(name)) {
-                include_stack.back()->name = name.substr(1, name.size() - 2);
+                file_stack.back()->name = name.substr(1, name.size() - 2);
             } else {
                 error("\"" + name + "\" is not a valid filename");
             }
         }
-        output_lines.push_back({EMPTY});
+        output_lines.push_back({});
     }
 
     void visit_statements() {
@@ -421,12 +528,21 @@ namespace forge_god {
         output_lines.push_back(current_line);
     }
 
+    void reset() {
+        file_stack.clear();
+        if_stack.clear();
+        if_false_count.clear();
+        symbol_table = define_symbol_table("symbol table", predefined_marco);
+        pragma_once.clear();
+        disabled_marco.clear();
+    }
+
     void run(const string &name) {
         if (pragma_once.count(name)) {
             return;
         }
         file_info current_file(name);
-        vector <pair<token, int>> current_if_stack; // vector <bool> is shit
+        vector <pair<token, int>> current_if_stack;
         enter_file(current_file, current_if_stack);
         while (!current_file.eof()) {
             current_line = current_file.get_next_line();
@@ -451,6 +567,8 @@ namespace forge_god {
                     visit_ifndef();
                 } else if (directive == Else) {
                     visit_else();
+                } else if (directive == If) {
+                    visit_if();
                 } else if (directive == Endif) {
                     visit_endif();
                 } else if (directive == Pragma) {
@@ -474,11 +592,7 @@ namespace forge_god {
         if (output == nullptr) {
             throw std::runtime_error("Failed to open output file " + output_file_name);
         }
-        for (auto &i : output_lines) {
-            for (auto &j : i) {
-                fprintf(output, "%s", j.c_str());
-            }
-            fputs("\n", output);
-        }
+        output_lines.flush(output);
+        fclose(output);
     }
 }

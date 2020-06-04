@@ -11,6 +11,7 @@
 #include <stdarg.h>
 #endif
 #define debug(s) fprintf(stderr, "%s\n", s)
+#define debugstd(s) fprintf(stderr, "%s\n", (s).c_str())
 
 namespace forge_god {
 
@@ -19,6 +20,7 @@ namespace forge_god {
     static const token Include = "include";
     static const token Error   = "error";
     static const token Warning = "warning";
+    static const token If      = "if";
     static const token Ifdef   = "ifdef";
     static const token Ifndef  = "ifndef";
     static const token Else    = "else";
@@ -26,7 +28,8 @@ namespace forge_god {
     static const token Pragma  = "pragma";
     static const token Once    = "once";
     static const token Line    = "line";
-    const token directive_list[] = {Define, Undef, Include, Error, Warning, Ifdef, Ifndef, Else, Endif, Pragma, Line};
+    const token directive_list[] = {Define, Undef, Include, Error, Warning, If, Ifdef, Ifndef, Else, Endif, Pragma, Line};
+    static const token Defined = "defined";
     static const token SPACE   = " ";
     static const token EMPTY   = "";
     static const token HASH   = "#";
@@ -34,6 +37,19 @@ namespace forge_god {
     static const token LEFT_BRACKET = "(";
     static const token RIGHT_BRACKET = ")";
     static const token COMMA = ",";
+    static const token DOT = ".";
+
+    const std::unordered_set<string> operators = {
+            "!", "~",
+            "+", "-", "*", "/", "%", "++", "--", "<<", ">>",
+            "<", "<=", ">", ">=", "==", "!=",
+            "&", "^", "|", "&&", "||",
+            "=", "+=", "-=", "*=", "/=", "%=", "<<=", ">>=",
+            "&=", "^=", "|=",
+            ",",
+            "<>", // place holder for template
+    };
+
 
     void output_colored_warning();
 
@@ -49,8 +65,14 @@ namespace forge_god {
 
     bool is_string(const token& s);
 
-    int parse_number(const token& s);
+    bool is_number_literal(const token& s);
 
+    int64_t parse_positive_decimal(const token& s);
+
+    int64_t parse_integer(const token& s);
+    namespace expr {
+        int eval(const token_sequence &tokens);
+    }
     bool start_with_hash(const token_sequence &line);
 
     token get_directive(const token_sequence& line);
@@ -69,36 +91,21 @@ namespace forge_god {
         string name, time_stamp;
         FILE* file;
         vector <string> lines;
-        int line_offset;
+        int64_t line_offset;
+        explicit file_info(const string& file_name);
 
-        explicit file_info(const string& file_name) {
-            name = file_name;
-            time_stamp = get_file_modified_time(file_name);
-            line_offset = 0;
-            if ((file = fopen(file_name.c_str(), "r")) == nullptr) {
-                error(file_name + ": Failed to open file");
-            }
-        }
+        ~file_info();
 
-        ~file_info() {
-            if (file != nullptr) {
-                fclose(file);
-            }
-        }
-        bool eof() {
-            bool ret = fgetc(file) == EOF;
-            if (!ret) fseek(file, -1, SEEK_CUR);
-            return ret;
-        }
-        int line_number() {
-            return int(lines.size()) + line_offset;
-        }
-        void set_line_number(int no) {
-            line_offset = no - 1 - int(lines.size());
-        }
+        bool eof();
+
+        int64_t get_line_number();
+
+        void set_line_number(int64_t no);
+
         token_sequence get_next_line();
-    private:
+
         string get_semantic_line();
+
         string getline_std_string();
     };
 
@@ -107,22 +114,24 @@ namespace forge_god {
         string current_token;
     public:
         token_sequence_builder() = default;
+
         void add(const token& s);
+
         void add(char c);
+
         void add_all(const token_sequence& tokenSequence);
+
         void concatenate(const token_sequence& tokenSequence);
+
         token_sequence get_token_sequence();
-        bool empty() {
-            return current_token.empty() && tokens.empty();
-        }
-        void clear() {
-            tokens.clear();
-            current_token.clear();
-        }
+
+        bool empty();
+
+        void clear();
     };
 
     struct define_info {
-        bool is_object_like;
+        bool is_object_like, is_variadic;
         token_sequence params;
         token_sequence content;
         define_info () = default;
@@ -130,56 +139,34 @@ namespace forge_god {
         : is_object_like(_is_object_like), params(move(_params)), content(move(_content)) {}
     };
     struct define_symbol_table {
+        const static std::unordered_set<token> disabled_names;
         string name;
         std::unordered_map<token, define_info> table;
 
         define_symbol_table() = default;
 
-        explicit define_symbol_table(string _name) : name(std::move(_name)) {
-            add_object("__DATE__", stringify(get_date()));
-            add_object("__TIME__", stringify(get_date()));
-#ifdef WINDOWS
-            add_object("WIN32", {});
-#else
-            add_object("__unix__", {});
-#endif
-        }
+        explicit define_symbol_table(string _name, std::unordered_map<token, token_sequence> predefined);
 
-        void add_object(const token &s, const token_sequence& tokenSequence) {
-            add(s, define_info(true, {}, tokenSequence));
-        }
+        void add_object(const token &s, const token_sequence& tokenSequence);
 
-        void add_function(const token &s, const token_sequence& params, const token_sequence& content) {
-            add(s, define_info(false, params, content));
-        }
+        void add_function(const token &s, const token_sequence& params, const token_sequence& content);
 
-        void add(const token &s, const define_info &defineInfo) {
-            auto iter = table.find(s);
-            if (iter != table.end() && (iter->second.is_object_like != defineInfo.is_object_like || iter->second.params != defineInfo.params || iter->second.content != defineInfo.content)) {
-                warning("redefining marco " + s + " that is not effectively the same with previous define");
-            }
-            table.insert(std::make_pair(s, defineInfo));
-        }
+        void add(const token &s, const define_info &defineInfo);
 
-        bool contains(const token &s) const {
-            return table.count(s) == 1;
-        }
+        bool contains(const token &s) const;
 
-        define_info get(const token &s) {
-            auto x = table.find(s);
-            if (x == table.end()) {
-                error("failed to find element" + s + " in " + name);
-            }
-            return x->second;
-        }
+        define_info get(const token &s);
 
-        void remove(const token &s) {
-            auto x = table.find(s);
-            if (x != table.end()) {
-                table.erase(x);
-            }
-        }
+        void remove(const token &s);
     };
 
-}; //FORGE_GOD
+    class output_buffer {
+    private:
+        string buffer;
+    public:
+        void push_back(const token_sequence& tokens);
+        void flush(FILE* file);
+    };
+
+} //FORGE_GOD
 #endif //FORGE_UTIL_H

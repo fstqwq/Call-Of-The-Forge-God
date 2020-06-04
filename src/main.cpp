@@ -6,12 +6,12 @@
 #include "util.h"
 
 int main(int argc, char **argv) {
-    vector<string> input_file_names;
-    string output_file_name = "";
+    std::vector<std::string> input_file_names;
+    std::string output_file_name = "";
     {
         bool read_output = false;
         for (int i = 1; i < argc; i++) {
-            string arg = argv[i];
+            std::string arg = argv[i];
             if (arg == "-o") {
                 if (read_output) {
                     forge_god::error("unexpected double -o");
@@ -39,6 +39,7 @@ int main(int argc, char **argv) {
         forge_god::error("no input file");
     }
     for (const auto & file : input_file_names) {
+        forge_god::reset();
         forge_god::run(file);
     }
     forge_god::output(output_file_name);
