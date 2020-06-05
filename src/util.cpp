@@ -7,7 +7,6 @@
 #include <ctime>
 #include "util.h"
 #include <sys/stat.h>
-#include <cassert>
 
 #ifndef WIN32
 #include <unistd.h>
@@ -31,6 +30,12 @@ namespace forge_god {
 
     string get_time() {
         return get_current_time().substr(11, 8);
+    }
+
+
+    bool test_file_exist(const string &s) {
+        struct stat attr{};
+        return stat(s.c_str(), &attr) == 0;
     }
 
     string get_file_modified_time(const string& s) {
@@ -174,6 +179,7 @@ namespace forge_god {
             |   src1=expression op='|'               src2=expression                    #binaryExpr
             |   src1=expression op='&&'              src2=expression                    #binaryExpr
             |   src1=expression op='||'              src2=expression                    #binaryExpr
+            |   src1=expression ? src2=expression :  src3=expression                    #ternaryExpr
             |   src1=expression op=','               src2=expression                    #binaryExpr
             |   constant                                                                #literal
             |   Identifier                                                              #identifier
@@ -186,6 +192,7 @@ namespace forge_god {
             ADD, SUB, MUL, DIV, MOD, SHL, SHR,
             LT, LEQ, GT, GEQ, EQ, NEQ,
             AND, OR, XOR, ANDL, ORL,
+            QUS,
             COM,
         };
 
@@ -197,6 +204,7 @@ namespace forge_god {
             ADD, SUB, MUL, DIV, MOD, SHL, SHR,
             LT, LEQ, GT, GEQ, EQ, NEQ,
             AND, OR, XOR, ANDL, ORL,
+            QUS,
             COM,
         };
 
@@ -216,6 +224,7 @@ namespace forge_god {
                 {"|", OR},
                 {"&&", ANDL},
                 {"||", ORL},
+                {"?", QUS},
                 {",", COM}
         };
 
@@ -231,7 +240,8 @@ namespace forge_god {
                 case OR: return 7;
                 case ANDL: return 8;
                 case ORL: return 9;
-                case COM: return 10;
+                case QUS: return 10;
+                case COM: return 11;
                 default: return -1;
             }
         }
@@ -258,21 +268,30 @@ namespace forge_god {
 
         void collapse(vector <int64_t>& values, vector <op>& ops, int delimiter_precedence, string op_str = "");
 
-        int64_t do_eval(string operand) {
+        void read_until(const string& expected_ending);
+
+        int64_t do_eval(string expected_ending) {
             vector <int64_t> values;
             vector <op> ops;
+            bool safe_exit = false;
             while (has_next()) {
                 const auto &cur = get_next();
                 if (is_identifier(cur)) {
                     error("unexpected " + cur); // impossible
                 } else if (cur == RIGHT_BRACKET) {
-                    if (operand == "expression") {
-                        // top-level, unmatched
+                    if (expected_ending != RIGHT_BRACKET) {
                         error("missing '(' in expression");
                     }
+                    safe_exit = true;
+                    break;
+                } else if (cur == ":") {
+                    if (expected_ending != ":") {
+                        error("missing '?' in expression");
+                    }
+                    safe_exit = true;
                     break;
                 } else if (cur == LEFT_BRACKET || is_number_literal(cur)) {
-                    int64_t value = cur == LEFT_BRACKET ? do_eval("expression between '(' and ')'") : parse_positive_decimal(cur);
+                    int64_t value = cur == LEFT_BRACKET ? do_eval(RIGHT_BRACKET) : parse_positive_decimal(cur);
                     while (!ops.empty() && unary_operators.count(ops.back())) {
                         switch (ops.back()) {
                             case NOT:   value = !value; break;
@@ -284,6 +303,9 @@ namespace forge_god {
                     }
                     values.push_back(value);
                     if (values.size() != ops.size() + 1) {
+                    /*    for (auto &s : current_line) {
+                            debugstd(s);
+                        }*/
                         error("missing binary operator before token " + cur); // not possible ?
                     }
                 } else if (cur == "+" || cur == "-") {
@@ -306,24 +328,35 @@ namespace forge_god {
                     op cur_op = binary_operator_map.at(cur);
                     if (ops.size() + 1 == values.size()) {
                         collapse(values, ops, precedence(cur_op), cur);
-                        if (values.size() != 1) {
-                            error("unexpected value size " + std::to_string(values.size())); // not possible ?
-                        }
                         if (precedence(cur_op) >= SHORTCUT_LIMIT) {
+                            if (values.size() != 1) {
+                                error("unexpected value size " + std::to_string(values.size())); // not possible ?
+                            }
                             switch (cur_op) {
                                 case ANDL:
-                                    if (!values.back()) return 0;
-                                    operand = "right operand of '||'";
+                                    if (!values.back()) {
+                                        read_until(expected_ending);
+                                        return 0;
+                                    }
                                     break;
                                 case ORL:
-                                    if (!values.back()) return 1;
-                                    operand = "right operand of '||'";
+                                    if (values.back()) {
+                                        read_until(expected_ending);
+                                        return 1;
+                                    }
+                                    break;
+                                case QUS:
+                                    if (values.back()) {
+                                        int64_t ret = do_eval(":");
+                                        read_until(expected_ending);
+                                        return ret;
+                                    }
+                                    read_until(":");
                                     break;
                                 case COM:
-                                    operand = "right operand of ','";
                                     break;
                                 default:
-                                    error("unexpected error -1");
+                                    error("unexpected error [unknown shortcut operator]");
                             }
                             values.clear();
                             ops.clear();
@@ -331,12 +364,15 @@ namespace forge_god {
                             ops.push_back(binary_operator_map.at(cur));
                         }
                     } else {
-                        error("operator '" + op2string(ops.back()) + "' has no right operand");
+                        error("operator '" + op2string(ops.back()) + "' has no right expected_ending");
                     }
                 }
             }
+            if (!safe_exit && expected_ending != EMPTY) {
+                error("missing '" + expected_ending + "' in expression");
+            }
             if (!values.size()) {
-                error(operand + " expected");
+                error("value before " + expected_ending + " expected");
             }
             collapse(values, ops, SHORTCUT_LIMIT);
             if (values.size() != 1) {
@@ -344,6 +380,34 @@ namespace forge_god {
             }
             return values.back();
         }
+
+        void read_until(const string& expected_ending) {
+            if (expected_ending == EMPTY);
+            else if (expected_ending == RIGHT_BRACKET) {
+                int layer = 1;
+                while (layer) {
+                    if (!has_next()) {
+                        error("missing ')' in expression");
+                    }
+                    const auto & next = get_next();
+                    if (next == LEFT_BRACKET) layer++;
+                    else if (next == RIGHT_BRACKET) layer--;
+                }
+            } else if (expected_ending == ":") {
+                int layer = 1;
+                while (layer) {
+                    if (!has_next()) {
+                        error("missing ':' in ternary expression");
+                    }
+                    const auto & next = get_next();
+                    if (next == "?") layer++;
+                    else if (next == ":") layer--;
+                }
+            } else {
+                error("unknown expected ending " + expected_ending);
+            }
+        }
+
 
         void collapse(vector <int64_t>& values, vector <op>& ops, int delimiter_precedence, string op_str) {
             if (values.size() <= ops.size()) { // == ?
@@ -374,8 +438,8 @@ namespace forge_god {
                     case OR : res = lhs | rhs; break;
                     case XOR: res = lhs ^ rhs; break;
                     default:
-                        // unary , && || (impossible)
-                        error("unexpected error " + std::to_string(cur_op));
+                        // unary , && || ? (impossible)
+                        error("unexpected error [unknown binary operator]");
                         res = -1;
                 }
                 values.push_back(res);
@@ -410,7 +474,9 @@ namespace forge_god {
             }
             current_line = std::move(purified);
             current_line_counter = 0;
-            return do_eval("expression") != 0;
+            int64_t ret = do_eval(EMPTY);
+//            debugstd("eval = " + std::to_string(ret));
+            return ret != 0;
         }
     }
 
@@ -436,10 +502,8 @@ namespace forge_god {
         size_t i = 1 + (line[0] == SPACE);
         if (i < line.size() && line[i] == SPACE) i++;
         if (i < line.size()) {
-            for (auto &item : directive_list) {
-                if (line[i] == item) {
-                    return item;
-                }
+            if (directive_set.count(line[i])) {
+                return line[i];
             }
         }
         return EMPTY;
@@ -473,15 +537,15 @@ namespace forge_god {
         while (!ret.empty() && ret.back() == '\r') {
             ret.pop_back();
         }
-        lines.push_back(ret);
+        line_no++;
         return ret;
     }
 
-    string file_info::get_semantic_line() {
-        assert(file != nullptr);
+    string file_info::get_logical_line() {
         string ret;
         bool next_line_expected;
         do {
+            if (eof()) break;
             string s = getline_std_string();
             if (!s.empty() && s.back() == '\\') {
                 s.back() = ' ';
@@ -491,12 +555,13 @@ namespace forge_god {
             }
             ret += s;
         } while (next_line_expected);
+        last_line = ret; // replace for better reading
         return ret;
     }
 
     token_sequence file_info::get_next_line() {
         token_sequence_builder ret;
-        string s = get_semantic_line();
+        string s = get_logical_line();
         for (size_t i = 0; i < s.size(); ) {
             if (i + 1 < s.size() && s[i] == '/' && s[i + 1] == '*') {
                 size_t j = i + 2;
@@ -507,16 +572,16 @@ namespace forge_god {
                             found = true;
                             break;
                         }
+                        j++;
                     }
-                    i = j + 1;
                     if (found) {
                         ret.add(' ');
-                        i++;
+                        i = j + 2;
                     } else {
                         if (feof(file)) {
                             error("unterminated comment");
                         }
-                        s += get_semantic_line();
+                        s += get_logical_line();
                     }
                 } while (!found);
             } else if (i + 1 < s.size() && s[i] == '/' && s[i + 1] == '/') {
@@ -556,7 +621,7 @@ namespace forge_god {
     file_info::file_info(const string &file_name) {
         name = file_name;
         time_stamp = get_file_modified_time(file_name);
-        line_offset = 0;
+        line_no = 0;
         if ((file = fopen(file_name.c_str(), "r")) == nullptr) {
             error(file_name + ": Failed to open file");
         }
@@ -569,17 +634,18 @@ namespace forge_god {
     }
 
     bool file_info::eof() {
-        bool ret = fgetc(file) == EOF;
-        if (!ret) fseek(file, -1, SEEK_CUR);
+        int ch;
+        bool ret = (ch = fgetc(file)) == EOF;
+        if (!ret) ungetc(ch, file);
         return ret;
     }
 
     int64_t file_info::get_line_number() {
-        return int64_t(lines.size()) + line_offset;
+        return line_no;
     }
 
     void file_info::set_line_number(int64_t no) {
-        line_offset = no - 1 - int64_t(lines.size());
+        line_no = no - 1;
     }
 
     const std::unordered_set<token> define_symbol_table::disabled_names = {
@@ -588,8 +654,8 @@ namespace forge_god {
         "defined"
     };
 
-    define_symbol_table::define_symbol_table(string _name, std::unordered_map<token, token_sequence> predefined) : name(std::move(_name)) {
-        for (const auto &i : predefined) {
+    define_symbol_table::define_symbol_table(string _name, std::unordered_map<token, token_sequence> _predefined) : name(std::move(_name)) {
+        for (const auto &i : _predefined) {
             add_object(i.first, i.second);
         }
     }
@@ -686,9 +752,9 @@ namespace forge_god {
             for (auto &i : tokenSequence) {
                 add(i);
             }
-        } else if(is_sep(tokens.back().back()) || is_sep(tokenSequence.front().front())) {
+        } /*else if(is_sep(tokens.back().back()) || is_sep(tokenSequence.front().front())) {
             error("pasting \"" + tokens.back() + "\" and \"" + tokenSequence.front() + "\" does not give a valid preprocessing token");
-        } else {
+        } */else {
             tokens.back() += tokenSequence.front();
             for (size_t i = 1; i < tokenSequence.size(); i++) {
                 add(tokenSequence[i]);
@@ -713,6 +779,12 @@ namespace forge_god {
     }
 
     void output_buffer::push_back(const token_sequence& tokens) {
+        if (tokens.size() == 0 || (tokens.size() == 1 && tokens.back() == SPACE)) {
+            if (!last_empty) buffer += '\n';
+            last_empty = true;
+            return;
+        }
+        last_empty = false;
         for (const auto &i : tokens) {
             buffer += i;
         }
@@ -720,6 +792,10 @@ namespace forge_god {
     }
     void output_buffer::flush(FILE* file) {
         fputs(buffer.c_str(), file);
+        buffer.clear();
+    }
+
+    void output_buffer::clear() {
         buffer.clear();
     }
 
@@ -745,15 +821,25 @@ void output_colored_error() {
 }
 
 #else
-void outputColoredWarning() {
-    fprintf(stderr, "\033[0;31merror:\033[0m ");
+void output_colored_error() {
+    fprintf(stderr, "\033[1;31merror:\033[0m ");
 }
-void outputColoredError() {
+void output_colored_warning() {
     fprintf(stderr, "\033[0;35mwarning:\033[0m ");
 }
 #endif
-    const char help_msg[] = "Call of the forge god : A simple C-like preprocessor.\nUsage : forge input_file [-o output_file]";
+    const char help_msg[] = "Call of the forge god : A simple C / C++ preprocessor.\n"
+                            "Usage : forge input_file [-o output_file] [-I include_dir]\n"
+                            "Read configs from __predefined.cpp and include_dir.cfg, modify them as you need.\n";
     void show_help_msg() {
         fputs(help_msg, stderr);
+    }
+
+    char get_path_sep() {
+#ifdef WINDOWS
+        return ';';
+#else
+        return ':';
+#endif
     }
 } //FORGE_GOD

@@ -3,13 +3,21 @@
 //
 
 #include "typedefs.h"
+#include "util.h"
 
 #ifndef FORGE_FORGE_H
 #define FORGE_FORGE_H
 namespace forge_god {
-    void reset();
+    static const string predefined          = "__predefined.cpp";
+    static const string include_dir_config  = "include_dir.cfg";
 
-    void run(const string &name);
+    void init();
+
+    void add_include_path(string path);
+
+    void reset(const string & name);
+
+    void run(string name);
 
     void output(const string &output_file_name);
 

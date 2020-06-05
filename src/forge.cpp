@@ -7,34 +7,42 @@
 
 namespace forge_god {
 
-    output_buffer output_lines;
-    std::unordered_map<token, token_sequence> predefined_marco({
-       { "__DATE__", stringify(get_date())},
-       { "__TIME__", stringify(get_time())},
-       { "__STDC__", {"1"}},
-       { "__STDC_VERSION__", {"201112L"}},
-       {"__cplusplus", {"201103L"}},
-#ifdef WINDOWS
-       { "WIN32", {}},
-#else
-       { "unix", {}},
-       { "__unix__", {}},
-#endif
-       {"and", {"&&"}},
-       {"and_eq", {"&="}},
-       {"bitand", {"&"}},
-       {"bitor", {"|"}},
-       {"compl", {"~"}},
-       {"not", {"!"}},
-       {"not_eq", {"!="}},
-       {"or", {"||"}},
-       {"or_eq", {"|="}},
-       {"xor", {"^"}},
-       {"xor_eq", {"^="}},
-    });
+    std::vector <std::string> include_path;
+    char path_dash = '/';
 
+    std::unordered_map<token, token_sequence> inline_predefined_marco = {
+            { "__DATE__", stringify(get_date())},
+            { "__TIME__", stringify(get_time())},
+#ifdef WINDOWS
+            { "WIN32", {}},
+            {"_WIN32", {}},
+            { "WIN64", {}},
+            {"_WIN64", {}},
+#else
+            { "unix", {}},
+            { "__unix__", {}},
+#endif
+            {"and", {"&&"}},
+            {"and_eq", {"&="}},
+            {"bitand", {"&"}},
+            {"bitor", {"|"}},
+            {"compl", {"~"}},
+            {"not", {"!"}},
+            {"not_eq", {"!="}},
+            {"or", {"||"}},
+            {"or_eq", {"|="}},
+            {"xor", {"^"}},
+            {"xor_eq", {"^="}},
+    };
+    define_symbol_table predefined_symbol_table;
+
+    output_buffer output_lines;
     vector <file_info*> file_stack;
     vector <vector<pair<token, int>>*> if_stack;
+    /* mask :   0 : if_state
+                1 : else_state
+                2 : elif_state
+     */
     vector <int> if_false_count;
     define_symbol_table symbol_table;
     std::unordered_set <string> pragma_once;
@@ -63,7 +71,7 @@ namespace forge_god {
 
     void dump_last_line() {
         if (!file_stack.empty()) {
-            fprintf(stderr, ">\t%s\n", file_stack.back()->lines.back().c_str());
+            fprintf(stderr, ">\t%s\n", file_stack.back()->last_line.c_str());
         }
     }
 
@@ -85,11 +93,14 @@ namespace forge_god {
     void set_file_define(const file_info& file) {
         symbol_table.remove("__FILE__");
         symbol_table.remove("__TIMESTAMP__");
+        symbol_table.remove("__INCLUDE_LEVEL__");
         symbol_table.add_object("__FILE__", stringify(file.name));
         symbol_table.add_object("__TIMESTAMP__", stringify(file.time_stamp));
+        symbol_table.add_object("__INCLUDE_LEVEL__", stringify(std::to_string(file_stack.size() - 1)));
     }
 
     void enter_file(file_info& file, vector< pair<token, int> >& ifs) {
+//        debugstd("enter " + file.name);
         file_stack.push_back(&file);
         if_stack.push_back(&ifs);
         if_false_count.push_back(0);
@@ -108,7 +119,7 @@ namespace forge_god {
         }
     }
 
-    token_sequence replace_line(const token_sequence& line, bool in_if) {
+    token_sequence replace_line(token_sequence line, bool in_if) {
         token_sequence_builder tokens;
         size_t n = line.size();
         for (size_t i = 0; i < n; i++) {
@@ -126,15 +137,28 @@ namespace forge_god {
                         vector <token_sequence> params;
                         token_sequence_builder current_tokens;
                         bool has_comma = false;
-                        for ( ; j < n && line[j] != RIGHT_BRACKET; j++) {
-                            if (line[j] == COMMA) {
-                                has_comma = true;
-                                params.push_back(current_tokens.get_token_sequence());
-                                current_tokens.clear();
-                            } else {
-                                if (line[j] != SPACE || !current_tokens.empty()) {
-                                    current_tokens.add(line[j]);
+                        for ( ; ; ) {
+                            for (; j < n && line[j] != RIGHT_BRACKET; j++) {
+                                if (line[j] == COMMA) {
+                                    has_comma = true;
+                                    params.push_back(current_tokens.get_token_sequence());
+                                    current_tokens.clear();
+                                } else {
+                                    if (line[j] != SPACE || !current_tokens.empty()) {
+                                        current_tokens.add(line[j]);
+                                    }
                                 }
+                            }
+                            if (j == n) {
+                                disabled_marco.erase(cur);
+                                token_sequence next = replace_line(file_stack.back()->get_next_line(), in_if);
+                                disabled_marco.insert(cur);
+                                for (const auto &t : next) {
+                                    line.push_back(std::move(t));
+                                }
+                                n = line.size();
+                            } else {
+                                break;
                             }
                         }
                         if (j == n || line[j] != RIGHT_BRACKET) {
@@ -206,10 +230,19 @@ namespace forge_god {
                                 if (is_identifier(content)) {
                                     if (in_hash) {
                                         in_hash = false;
-                                        next.add(get_string(*marco_map.find(content)->second));
+                                        if (marco_map.count(content)) {
+                                            next.add(get_string(*marco_map.find(content)->second));
+                                        } else {
+                                            next.add("#");
+                                            next.add_all(replace_line({content}, in_if));
+                                        }
                                     } else if (in_double_hash) {
                                         in_double_hash = false;
-                                        next.concatenate(replace_line(*marco_map.find(content)->second, in_if));
+                                        if (marco_map.count(content)) {
+                                            next.concatenate(replace_line(*marco_map.find(content)->second, in_if));
+                                        } else {
+                                            next.concatenate(replace_line({content}, in_if));
+                                        }
                                     } else {
                                         assert(!in_hash && !in_double_hash);
                                         if (marco_map.count(content)) {
@@ -227,7 +260,9 @@ namespace forge_god {
                             }
                         }
                         assert(!in_hash && !in_double_hash);
-                        tokens.add_all(next.get_token_sequence());
+                        // #define A(x,y) B(x, y), so need another replace line
+                        tokens.add_all(replace_line(next.get_token_sequence(), in_if));
+                        tokens.add(SPACE);
                     } else {
                         // not matched
                         tokens.add(cur);
@@ -350,7 +385,8 @@ namespace forge_god {
                         get_next();
                         prefix += HASH;
                     }
-                    if (!param_set.count(peek_next())) {
+                    if (peek_next() == SPACE) get_next();
+                    if (peek_next() == EMPTY) {
                         error(prefix + " is not followed by a macro parameter");
                     }
                     content.add(prefix); content.add(get_next());
@@ -373,10 +409,10 @@ namespace forge_god {
         output_lines.push_back({});
     }
 
-    void visit_include() {
+    void visit_include(int next) {
         if (if_false_count.back()) {current_line.clear(); current_line_counter = 0; return;}
         string file_name;
-        for (int retry = 0; retry < 2; retry++) {
+        for (int retry = 0; retry < 2; retry++) { // retry for replacement
             if (!is_string(peek_next())) {
                 if (peek_next() == "<") {
                     get_next();
@@ -391,6 +427,19 @@ namespace forge_god {
                         if (file_name.empty()) {
                             error("empty filename in #include");
                         }
+                        bool found = false;
+                        for (const auto &path : include_path) {
+                            if (test_file_exist(path + file_name)) {
+                                if (next-- == 0) {
+                                    file_name = path + file_name;
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (!found) {
+                            error(file_name + ": No such file or directory");
+                        }
                         break;
                     } else {
                         error("missing terminating > character");
@@ -402,6 +451,21 @@ namespace forge_god {
             } else {
                 file_name = peek_next().substr(1, peek_next().size() - 2);
                 get_next();
+                if (!test_file_exist(file_name) || next-- != 0) {
+                    bool found = false;
+                    for (const auto &path : include_path) {
+                        if (test_file_exist(path + file_name)) {
+                            if (next-- == 0) {
+                                file_name = path + file_name;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!found) {
+                        error(file_name + ": No such file or directory");
+                    }
+                }
                 break;
             }
         }
@@ -416,14 +480,14 @@ namespace forge_god {
 
     void visit_error() {
         if (if_false_count.back()) {current_line.clear(); current_line_counter = 0; return;}
-        error(file_stack.back()->lines.back());
+        error(file_stack.back()->last_line);
         while (has_next()) get_next();
         output_lines.push_back({});
     }
 
     void visit_warning() {
         if (if_false_count.back()) {current_line.clear(); current_line_counter = 0; return;}
-        warning(file_stack.back()->lines.back());
+        warning(file_stack.back()->last_line);
         while (has_next()) get_next();
         output_lines.push_back({});
     }
@@ -431,7 +495,7 @@ namespace forge_god {
     void visit_ifdef() {
         if (if_false_count.back()) {
             if_stack.back()->push_back(make_pair("#ifdef (at line " + std::to_string(
-                    file_stack.back()->get_line_number()) + ")", 1));
+                    file_stack.back()->get_line_number()) + ")", 5));
             current_line.clear(); current_line_counter = 0; return;
         }
         if (!has_next()) {
@@ -442,34 +506,41 @@ namespace forge_god {
         }
 
         int val = symbol_table.contains(get_next());
-        if_stack.back()->push_back(make_pair("#ifdef (at line " + std::to_string(file_stack.back()->get_line_number()) + ")", val));
+        if_stack.back()->push_back(make_pair("#ifdef (at line " + std::to_string(file_stack.back()->get_line_number()) + ")", (val << 2) | val));
         if_false_count.back() += !val;
     }
 
     void visit_ifndef() {
         if (if_false_count.back()) {
             if_stack.back()->push_back(make_pair("#ifndef (at line " + std::to_string(
-                    file_stack.back()->get_line_number()) + ")", 1));
+                    file_stack.back()->get_line_number()) + ")", 5));
             current_line.clear(); current_line_counter = 0; return;
         }
         if (!has_next()) {
-            error("no macro name given in #ifdef directive");
+            error("no macro name given in #ifndef directive");
         }
         if (!is_identifier(peek_next())) {
             error("macro names must be identifiers");
         }
         int val = !symbol_table.contains(get_next());
-        if_stack.back()->push_back(make_pair("#ifndef (at line " + std::to_string(file_stack.back()->get_line_number()) + ")", val));
+        if_stack.back()->push_back(make_pair("#ifndef (at line " + std::to_string(file_stack.back()->get_line_number()) + ")", (val << 2) | val));
         if_false_count.back() += !val;
     }
 
     void visit_if() {
+        if (if_false_count.back()) {
+            if_stack.back()->push_back(make_pair("#if (at line " + std::to_string(
+                    file_stack.back()->get_line_number()) + ")", 5));
+            current_line.clear(); current_line_counter = 0; return;
+        }
         if (!has_next()) {
             error("#if with no expression");
         }
         replace_current_line(true);
+//        debugstd(file_stack.back()->last_line);
         int val = expr::eval(current_line);
-        if_stack.back()->push_back(make_pair(file_stack.back()->lines.back(), val));
+        if_stack.back()->push_back(make_pair(file_stack.back()->last_line + " (at line " + std::to_string(
+        file_stack.back()->get_line_number()) + ")", (val << 2) | val));
         if_false_count.back() += !val;
         current_line.clear(); current_line_counter = 0;
     }
@@ -478,28 +549,67 @@ namespace forge_god {
         if (if_stack.empty()) {
             error("#else without #if");
         }
-        if (if_stack.back()->back().second & 2) {
+        bool if_state   = if_stack.back()->back().second & 1;
+        bool else_state = (if_stack.back()->back().second >> 1) & 1;
+        bool elif_state = (if_stack.back()->back().second >> 2) & 1;
+        if (else_state) {
             error("#else after #else");
         }
-        if_false_count.back() += if_stack.back()->back().second & 1 ? 1 : -1;
+        if_false_count.back() -= !if_state;
+        if (elif_state) {
+            // must be false
+            if_false_count.back() += 1;
+            if_stack.back()->back().second = 4;
+            return;
+        }
+        if_false_count.back() += if_state ? 1 : 0;
         if_stack.back()->back().second ^= 3;
+    }
+
+    void visit_elif() { // #else #if
+        if (if_stack.empty()) {
+            error("#elif without #if");
+        }
+        bool if_state   = if_stack.back()->back().second & 1;
+        bool else_state = (if_stack.back()->back().second >> 1) & 1;
+        bool elif_state = (if_stack.back()->back().second >> 2) & 1;
+        if (else_state) {
+            error("#elif after #else");
+        }
+        if_false_count.back() -= !if_state;
+        if (elif_state) {
+            // must be false
+            if_false_count.back() += 1;
+            if_stack.back()->back().second = 4;
+            current_line.clear(); current_line_counter = 0;
+            return;
+        }
+        if (!has_next()) {
+            error("#elif with no expression");
+        }
+        replace_current_line(true);
+        int val = expr::eval(current_line);
+        if_stack.back()->back() = make_pair(file_stack.back()->last_line, (val << 2) | val);
+        if_false_count.back() += !val;
+        current_line.clear(); current_line_counter = 0;
     }
 
     void visit_endif() {
         if (if_stack.empty()) {
             error("#endif without #if");
         }
+//        debugstd("endif " + file_stack.back()->name +  " on line " + std::to_string(file_stack.back()->get_line_number()) + " " + if_stack.back()->back().first);
         if_false_count.back() -= !(if_stack.back()->back().second & 1);
         if_stack.back()->pop_back();
     }
 
     void visit_pragma() {
         if (if_false_count.back()) { current_line.clear(); current_line_counter = 0; return; }
-        if (!has_next()) warning("ignoring pragma");
+        if (!has_next())/* warning("ignoring pragma")*/;
         else if (get_next() == Once) {
             pragma_once.insert(file_stack.back()->name);
         } else {
-            warning("ignoring unknown pragma");
+            //warning("ignoring unknown pragma");
             while (has_next()) get_next();
         }
         output_lines.push_back({});
@@ -524,20 +634,25 @@ namespace forge_god {
     }
 
     void visit_statements() {
+        if (if_false_count.back()) { current_line.clear(); current_line_counter = 0; return; }
         replace_current_line();
         output_lines.push_back(current_line);
     }
 
-    void reset() {
+    void reset(const string & name) {
         file_stack.clear();
         if_stack.clear();
         if_false_count.clear();
-        symbol_table = define_symbol_table("symbol table", predefined_marco);
+        symbol_table = predefined_symbol_table;
+        symbol_table.add_object("__BASE_FILE__", stringify(name));
         pragma_once.clear();
         disabled_marco.clear();
     }
 
-    void run(const string &name) {
+    void run(string name) {
+        for (size_t tmp; (tmp = name.find('\\' ^ '/' ^ path_dash)) != -1llu; ) {
+            name[tmp] = path_dash;
+        }
         if (pragma_once.count(name)) {
             return;
         }
@@ -556,7 +671,9 @@ namespace forge_god {
                 } else if (directive == Undef) {
                     visit_undef();
                 } else if (directive == Include) {
-                    visit_include();
+                    visit_include(0);
+                } else if (directive == Include_next) {
+                    visit_include(1);
                 } else if (directive == Error) {
                     visit_error();
                 } else if (directive == Warning) {
@@ -567,6 +684,8 @@ namespace forge_god {
                     visit_ifndef();
                 } else if (directive == Else) {
                     visit_else();
+                } else if (directive == Elif) {
+                    visit_elif();
                 } else if (directive == If) {
                     visit_if();
                 } else if (directive == Endif) {
@@ -579,6 +698,7 @@ namespace forge_god {
                     if (!if_false_count.back()) error("unknown directive");
                     continue;
                 }
+                if (has_next() && peek_next() == SPACE) get_next();
                 if (has_next()) warning("extra tokens at end of #" + directive + " directive");
             } else {
                 visit_statements();
@@ -594,5 +714,45 @@ namespace forge_god {
         }
         output_lines.flush(output);
         fclose(output);
+    }
+
+    void add_include_path(string path) {
+        if (path.empty());
+        else {
+            if (path.find('/') != -1llu) {
+                path_dash = '/';
+            } else if (path.find('\\') != -1llu) {
+                path_dash = '\\';
+            }
+            if (path.back() != path_dash) {
+                path += path_dash;
+            }
+        }
+//        debugstd("include " + path);
+        include_path.push_back(path);
+    }
+
+    void init() {
+        if (forge_god::test_file_exist(forge_god::include_dir_config)) {
+            FILE *file = fopen(include_dir_config.c_str(), "r");
+            int ch = fgetc(file);
+            while (ch != EOF) {
+                while (ch <= ' ') ch = fgetc(file);
+                string cur = "";
+                while (ch >= ' ') {
+                    cur += char(ch);
+                    ch = fgetc(file);
+                }
+                while (cur.size() && cur.back() <= ' ') cur.pop_back();
+                add_include_path(cur);
+            }
+        }
+        symbol_table = define_symbol_table("symbol table", inline_predefined_marco);
+        if (forge_god::test_file_exist(forge_god::predefined)) {
+            run(predefined);
+            symbol_table.remove("__BASE_FILE__");
+            output_lines.clear();
+        }
+        std::swap(symbol_table, predefined_symbol_table);
     }
 }

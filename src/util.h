@@ -14,21 +14,22 @@
 #define debugstd(s) fprintf(stderr, "%s\n", (s).c_str())
 
 namespace forge_god {
-
     static const token Define  = "define";
     static const token Undef   = "undef";
     static const token Include = "include";
+    static const token Include_next = "include_next";
     static const token Error   = "error";
     static const token Warning = "warning";
     static const token If      = "if";
     static const token Ifdef   = "ifdef";
     static const token Ifndef  = "ifndef";
     static const token Else    = "else";
+    static const token Elif    = "elif";
     static const token Endif   = "endif";
     static const token Pragma  = "pragma";
     static const token Once    = "once";
     static const token Line    = "line";
-    const token directive_list[] = {Define, Undef, Include, Error, Warning, If, Ifdef, Ifndef, Else, Endif, Pragma, Line};
+    const std::unordered_set<token> directive_set = {Define, Undef, Include, Include_next, Error, Warning, If, Ifdef, Ifndef, Else, Elif, Endif, Pragma, Line};
     static const token Defined = "defined";
     static const token SPACE   = " ";
     static const token EMPTY   = "";
@@ -54,6 +55,8 @@ namespace forge_god {
     void output_colored_warning();
 
     void output_colored_error();
+
+    bool test_file_exist(const string &s);
 
     string get_file_modified_time(const string& s);
 
@@ -87,11 +90,13 @@ namespace forge_god {
 
     void show_help_msg();
 
+    char get_path_sep();
+
     struct file_info {
         string name, time_stamp;
         FILE* file;
-        vector <string> lines;
-        int64_t line_offset;
+        string last_line;
+        int64_t line_no;
         explicit file_info(const string& file_name);
 
         ~file_info();
@@ -104,7 +109,7 @@ namespace forge_god {
 
         token_sequence get_next_line();
 
-        string get_semantic_line();
+        string get_logical_line();
 
         string getline_std_string();
     };
@@ -164,8 +169,15 @@ namespace forge_god {
     private:
         string buffer;
     public:
+        bool last_empty;
+
+        output_buffer () = default;
+
         void push_back(const token_sequence& tokens);
+
         void flush(FILE* file);
+
+        void clear();
     };
 
 } //FORGE_GOD
