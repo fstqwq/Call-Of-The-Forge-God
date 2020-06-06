@@ -45,9 +45,16 @@ int main(int argc, char **argv) {
     if (input_file_names.empty()) {
         forge_god::error("no input file");
     }
-    for (const auto & file : input_file_names) {
-        forge_god::reset(file);
-        forge_god::run(file);
+    if (input_file_names.size() > 1) {
+        forge_god::error("one input file is expected");
+    }
+    try {
+        for (const auto &file : input_file_names) {
+            forge_god::reset(file);
+            forge_god::run(file);
+        }
+    } catch (...) {
+        forge_god::error("fix me");
     }
     forge_god::output(output_file_name);
 }

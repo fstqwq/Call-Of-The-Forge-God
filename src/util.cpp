@@ -103,7 +103,19 @@ namespace forge_god {
             if (s[n - 1] == s[n]) {
                 n--;
             }
+            if (s[n - 1] == 'U' || s[n - 1] == 'u') {
+                n--;
+            }
+        } else if (s[n - 1] == 'U' || s[n - 1] == 'u') {
+            n--;
+            if (s[n - 1] == 'L' || s[n - 1] == 'l') {
+                n--;
+                if (s[n - 1] == s[n]) {
+                    n--;
+                }
+            }
         }
+
         int64_t ret = 0;
         static char err_msg[] = "user-defined literal in preprocessor expression";
         if (s.front() == '0') {

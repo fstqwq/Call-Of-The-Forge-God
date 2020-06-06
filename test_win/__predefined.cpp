@@ -13,6 +13,8 @@
 #define __glibcxx_class_requires2(_a,_b,_c)
 #define __glibcxx_class_requires3(_a,_b,_c,_d)
 #define __glibcxx_class_requires4(_a,_b,_c,_d,_e)
+#define __x86_64 1
+#define __x86_64__ 1
 
 #define and &&
 #define and_eq &=

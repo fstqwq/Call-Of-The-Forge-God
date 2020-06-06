@@ -61,11 +61,11 @@ namespace forge_god {
                     } else {
                         fprintf(stderr, "                 ");
                     }
-                    fprintf(stderr, "from %s:%lld:\n", file_stack[i]->name.c_str(), file_stack[i]->get_line_number());
+                    fprintf(stderr, "from %s:%s:\n", file_stack[i]->name.c_str(), std::to_string(file_stack[i]->get_line_number()).c_str());
                     if (i == 0) break;
                 }
             }
-            fprintf(stderr, "%s:%lld: ", file_stack.back()->name.c_str(), file_stack.back()->get_line_number());
+            fprintf(stderr, "%s:%s: ", file_stack.back()->name.c_str(), std::to_string(file_stack.back()->get_line_number()).c_str());
         }
     }
 
@@ -120,10 +120,14 @@ namespace forge_god {
     }
 
     token_sequence replace_line(token_sequence line, bool in_if) {
+    /*    debugstd("replace line" + std::to_string(in_if));
+        for (const auto & i : line) {
+            debugstd(i);
+        }*/
         token_sequence_builder tokens;
         size_t n = line.size();
         for (size_t i = 0; i < n; i++) {
-            const auto & cur = line[i];
+            const auto cur = line[i]; // line will change, so not const auto &
             if (is_identifier(cur) && symbol_table.contains(cur) && !disabled_marco.count(cur)) {
                 disabled_marco.insert(cur);
                 const auto & info = symbol_table.get(cur);
@@ -137,14 +141,20 @@ namespace forge_god {
                         vector <token_sequence> params;
                         token_sequence_builder current_tokens;
                         bool has_comma = false;
-                        for ( ; ; ) {
-                            for (; j < n && line[j] != RIGHT_BRACKET; j++) {
-                                if (line[j] == COMMA) {
+                        for (int level = 1; ; ) {
+                            for (; j < n; j++) {
+                                if (line[j] == COMMA && level == 1) {
                                     has_comma = true;
                                     params.push_back(current_tokens.get_token_sequence());
                                     current_tokens.clear();
                                 } else {
                                     if (line[j] != SPACE || !current_tokens.empty()) {
+                                        if (line[j] == LEFT_BRACKET) {
+                                            level++;
+                                        } else if (line[j] == RIGHT_BRACKET) {
+                                            level--;
+                                            if (!level) break;
+                                        }
                                         current_tokens.add(line[j]);
                                     }
                                 }
@@ -158,11 +168,11 @@ namespace forge_god {
                                 }
                                 n = line.size();
                             } else {
+                                if (level) {
+                                    error("unterminated argument list invoking macro " + cur);
+                                }
                                 break;
                             }
-                        }
-                        if (j == n || line[j] != RIGHT_BRACKET) {
-                            error("unterminated argument list invoking macro " + cur);
                         }
                         i = j;
                         if (current_tokens.empty() && !has_comma) {
@@ -227,30 +237,31 @@ namespace forge_god {
                                 if (in_va_opt && params.back().size() == 0) {
                                     continue;
                                 }
-                                if (is_identifier(content)) {
+                                if (is_identifier(content) || is_number_literal(content)) {
                                     if (in_hash) {
                                         in_hash = false;
                                         if (marco_map.count(content)) {
                                             next.add(get_string(*marco_map.find(content)->second));
                                         } else {
-                                            next.add("#");
-                                            next.add_all(replace_line({content}, in_if));
+                                            error("unexpected error");
+                                            /*next.add("#");
+                                            next.add_all(replace_line({content}, 0));*/
                                         }
                                     } else if (in_double_hash) {
                                         in_double_hash = false;
                                         if (marco_map.count(content)) {
-                                            next.concatenate(replace_line(*marco_map.find(content)->second, in_if));
+                                            next.concatenate(replace_line(*marco_map.find(content)->second, 0));
                                         } else {
-                                            next.concatenate(replace_line({content}, in_if));
+                                            next.concatenate({content});
                                         }
                                     } else {
                                         assert(!in_hash && !in_double_hash);
                                         if (marco_map.count(content)) {
-                                            next.add_all(replace_line(*marco_map.find(content)->second, in_if));
+                                            next.add_all(replace_line(*marco_map.find(content)->second, 0));
                                         } else if (info.is_variadic && content == "__VA_OPT__") {
                                             in_va_opt = 1;
                                         } else {
-                                            next.add_all(replace_line({content}, in_if));
+                                            next.add(content);
                                         }
                                     }
                                 } else {
@@ -276,7 +287,11 @@ namespace forge_god {
                     j++;
                     if (j < n && line[j] == SPACE) j++;
                     if (j == n || !is_identifier(line[j])) {
-                        error("operator \"defined\" requires an identifier");
+                        for (const auto &k : line) {
+                            debugstd(k);
+                        }
+                        debugstd(std::to_string(j));
+                        error("operator \"defined\" requires an identifier, but " + line[j] + " got  1");
                     }
                     ret = symbol_table.contains(line[j++]);
                     if (j < n && line[j] == SPACE) j++;
@@ -285,7 +300,7 @@ namespace forge_god {
                     }
                 } else {
                     if (!is_identifier(line[j])) {
-                        error("operator \"defined\" requires an identifier");
+                        error("operator \"defined\" requires an identifier, but " + line[j] + " got  2");
                     }
                     ret = symbol_table.contains(line[j]);
                 }
@@ -386,7 +401,7 @@ namespace forge_god {
                         prefix += HASH;
                     }
                     if (peek_next() == SPACE) get_next();
-                    if (peek_next() == EMPTY) {
+                    if ((prefix == HASH && !param_set.count(peek_next())) || peek_next() == EMPTY) {
                         error(prefix + " is not followed by a macro parameter");
                     }
                     content.add(prefix); content.add(get_next());
@@ -397,6 +412,7 @@ namespace forge_god {
         }
         info.content = content.get_token_sequence();
         symbol_table.add(marco, info);
+//        debugstd("add define " + marco);
         output_lines.push_back({});
     }
 
@@ -480,14 +496,20 @@ namespace forge_god {
 
     void visit_error() {
         if (if_false_count.back()) {current_line.clear(); current_line_counter = 0; return;}
-        error(file_stack.back()->last_line);
+        const auto &line = file_stack.back()->last_line;
+        auto pos = line.find_first_of(Warning) + Error.size();
+        while (pos < line.size() && isspace(line[pos])) pos++;
+        error(line.substr(pos, -1llu));
         while (has_next()) get_next();
         output_lines.push_back({});
     }
 
     void visit_warning() {
         if (if_false_count.back()) {current_line.clear(); current_line_counter = 0; return;}
-        warning(file_stack.back()->last_line);
+        const auto &line = file_stack.back()->last_line;
+        auto pos = line.find_first_of(Warning) + Warning.size();
+        while (pos < line.size() && isspace(line[pos])) pos++;
+        warning(line.substr(pos, -1llu));
         while (has_next()) get_next();
         output_lines.push_back({});
     }
@@ -644,6 +666,7 @@ namespace forge_god {
         if_stack.clear();
         if_false_count.clear();
         symbol_table = predefined_symbol_table;
+        //symbol_table.remove("__BASE_FILE__");
         symbol_table.add_object("__BASE_FILE__", stringify(name));
         pragma_once.clear();
         disabled_marco.clear();

@@ -139,7 +139,7 @@ namespace forge_god {
         bool is_object_like, is_variadic;
         token_sequence params;
         token_sequence content;
-        define_info () = default;
+        define_info () : is_object_like(false), is_variadic(false) {}
         define_info (bool _is_object_like, token_sequence _params, token_sequence _content)
         : is_object_like(_is_object_like), params(move(_params)), content(move(_content)) {}
     };
