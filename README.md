@@ -4,7 +4,9 @@ A simple one-pass implementation of C++ preprocessor, as the bonus part of [Ornn
 
 Supported features: Almost all features you need to compile a HelloWorld.
 
-Currently, successfully compiled C-style hello world. \<iostream\> is full of non-standard features so now not working.
+Currently
+* successfully compiled C-style hello world using WSL and MinGW 64
+* successfully self-compiled using WSL.
 
 Preprocessor read configs from "__predefined.cpp" and "include_dir.cfg", see test\_wsl/ and test\_win/ for detail.
 
